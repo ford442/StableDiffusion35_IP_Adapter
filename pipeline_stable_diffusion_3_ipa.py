@@ -920,20 +920,27 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         key_name = tmp_ip_layers.load_state_dict(state_dict["ip_adapter"], strict=False)
         print(f"=> loading ip_adapter: {key_name}")
 
-
+    # <<< START OF ADDED METHOD >>>
     @torch.inference_mode()
-    def encode_clip_image_emb(self, clip_image, device, dtype):
-        if isinstance(clip_image, Image.Image):
-            clip_image = [clip_image]
-            # clip
-        clip_image_tensor = self.clip_image_processor(images=clip_image, return_tensors="pt").pixel_values
+    def _encode_clip_image_emb(self, clip_image: Image.Image, device, dtype) -> torch.FloatTensor:
+        """
+        Helper method to encode a single PIL image into CLIP embeddings.
+        Resizes the image and returns the hidden states from the penultimate layer.
+        """
+        if not isinstance(clip_image, Image.Image):
+            raise TypeError("clip_image must be a PIL.Image.Image")
+            
+        # Resize image
+        clip_image = clip_image.resize((max(clip_image.size), max(clip_image.size)))
+        
+        # Process and encode
+        clip_image_tensor = self.clip_image_processor(images=[clip_image], return_tensors="pt").pixel_values
         clip_image_tensor = clip_image_tensor.to(device, dtype=dtype)
         clip_image_embeds = self.image_encoder(clip_image_tensor, output_hidden_states=True).hidden_states[-2]
-        clip_image_embeds = torch.cat([torch.zeros_like(clip_image_embeds), clip_image_embeds], dim=0)
-
+        
+        # Returns shape [1, seq_len, embed_dim]
         return clip_image_embeds
-
-
+    # <<< END OF ADDED METHOD >>>
 
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
@@ -1104,6 +1111,11 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
+            
+        # Ensure batch size is 1 for IP-Adapter logic
+        if batch_size != 1 and (clip_image is not None or clip_image_2 is not None):
+             logger.warning("Batch processing with multiple IP-Adapter images is not fully supported. Forcing batch size to 1.")
+             batch_size = 1
 
         device = self._execution_device
         dtype = self.transformer.dtype
@@ -1141,66 +1153,62 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
             
         prompt_embeds = prompt_embeds * text_scale
         
-        image_prompt_embeds_list = []
-        
+        # <<< START OF MODIFIED SECTION >>>
         # 3. prepare clip emb
-        if clip_image != None:
-            print('Using primary image.')
-            clip_image = clip_image.resize((max(clip_image.size), max(clip_image.size)))
-            #clip_image_embeds_1 = self.encode_clip_image_emb(clip_image, device, dtype)
-            #with torch.no_grad():
-            clip_image_embeds_1 = self.clip_image_processor(images=clip_image, return_tensors="pt").pixel_values
-            print('clip output shape: ', clip_image_embeds_1.shape)
-            clip_image_embeds_1 = clip_image_embeds_1.to(device, dtype=dtype)
-            clip_image_embeds_1 = self.image_encoder(clip_image_embeds_1, output_hidden_states=True).hidden_states[-2]
-            print('encoder output shape: ', clip_image_embeds_1.shape)
-            clip_image_embeds_1 = clip_image_embeds_1 * scale_1
-            image_prompt_embeds_list.append(clip_image_embeds_1)
-        if clip_image_2 != None:
-            print('Using secondary image.')
-            clip_image_2 = clip_image_2.resize((max(clip_image_2.size), max(clip_image_2.size)))
-            #with torch.no_grad():
-            clip_image_embeds_2 = self.clip_image_processor(images=clip_image_2, return_tensors="pt").pixel_values
-            clip_image_embeds_2 = clip_image_embeds_2.to(device, dtype=dtype)
-            clip_image_embeds_2 = self.image_encoder(clip_image_embeds_2, output_hidden_states=True).hidden_states[-2]
-            clip_image_embeds_2 = clip_image_embeds_2 * scale_2
-            image_prompt_embeds_list.append(clip_image_embeds_2)
-        if clip_image_3 != None:
-            print('Using tertiary image.')
-            clip_image_3 = clip_image_3.resize((max(clip_image_3.size), max(clip_image_3.size)))
-            #with torch.no_grad():
-            clip_image_embeds_3 = self.clip_image_processor(images=clip_image_3, return_tensors="pt").pixel_values
-            clip_image_embeds_3 = clip_image_embeds_3.to(device, dtype=dtype)
-            clip_image_embeds_3 = self.image_encoder(clip_image_embeds_3, output_hidden_states=True).hidden_states[-2]
-            clip_image_embeds_3 = clip_image_embeds_3 * scale_3
-            image_prompt_embeds_list.append(clip_image_embeds_3)
-        if clip_image_4 != None:
-            print('Using quaternary image.')
-            clip_image_4 = clip_image_4.resize((max(clip_image_4.size), max(clip_image_4.size)))
-            #with torch.no_grad():
-            clip_image_embeds_4 = self.clip_image_processor(images=clip_image_4, return_tensors="pt").pixel_values
-            clip_image_embeds_4 = clip_image_embeds_4.to(device, dtype=dtype)
-            clip_image_embeds_4 = self.image_encoder(clip_image_embeds_4, output_hidden_states=True).hidden_states[-2]
-            clip_image_embeds_4 = clip_image_embeds_4 * scale_4
-            image_prompt_embeds_list.append(clip_image_embeds_4)
-        if clip_image_5 != None:
-            print('Using quinary image.')
-            clip_image_5 = clip_image_5.resize((max(clip_image_5.size), max(clip_image_5.size)))
-            #with torch.no_grad():
-            clip_image_embeds_5 = self.clip_image_processor(images=clip_image_5, return_tensors="pt").pixel_values
-            clip_image_embeds_5 = clip_image_embeds_5.to(device, dtype=dtype)
-            clip_image_embeds_5 = self.image_encoder(clip_image_embeds_5, output_hidden_states=True).hidden_states[-2]
-            clip_image_embeds_5 = clip_image_embeds_5 * scale_5
-            image_prompt_embeds_list.append(clip_image_embeds_5)
+        image_embeds_list = []
+        scales_list = []
 
-            #cat, but not mean
-        clip_image_embeds_cat = torch.cat(image_prompt_embeds_list) 
-        print('catted embeds list without mean: ', clip_image_embeds_cat.shape)
-        zeros_tensor = torch.zeros_like(clip_image_embeds_cat)
-        print('zeros: ',zeros_tensor.shape)
-        clip_image_embeds = torch.cat([zeros_tensor, clip_image_embeds_cat], dim=1)
-        print('embeds shape: ', clip_image_embeds.shape)
+        # Collect all provided image embeddings and their scales
+        if clip_image is not None:
+            print("Processing primary image.")
+            image_embeds_list.append(self._encode_clip_image_emb(clip_image, device, dtype))
+            scales_list.append(scale_1)
+        if clip_image_2 is not None:
+            print("Processing secondary image.")
+            image_embeds_list.append(self._encode_clip_image_emb(clip_image_2, device, dtype))
+            scales_list.append(scale_2)
+        if clip_image_3 is not None:
+            print("Processing tertiary image.")
+            image_embeds_list.append(self._encode_clip_image_emb(clip_image_3, device, dtype))
+            scales_list.append(scale_3)
+        if clip_image_4 is not None:
+            print("Processing quaternary image.")
+            image_embeds_list.append(self._encode_clip_image_emb(clip_image_4, device, dtype))
+            scales_list.append(scale_4)
+        if clip_image_5 is not None:
+            print("Processing quinary image.")
+            image_embeds_list.append(self._encode_clip_image_emb(clip_image_5, device, dtype))
+            scales_list.append(scale_5)
+
+        if not image_embeds_list:
+            # If no images provided, create a zero tensor.
+            # We need the expected shape. We'll encode a dummy image to get it.
+            print("No IP-Adapter image provided, using zeros.")
+            dummy_image = Image.new('RGB', (256, 256), (0, 0, 0))
+            cond_image_embeds = self._encode_clip_image_emb(dummy_image, device, dtype)
+            cond_image_embeds = torch.zeros_like(cond_image_embeds)
+        else:
+            # Stack all embeddings. Shape: [Num_Images, 1, Seq_Len, Embed_Dim]
+            all_embeds = torch.stack(image_embeds_list, dim=0)
+            
+            # Create scales tensor. Shape: [Num_Images]
+            scales = torch.tensor(scales_list, device=device, dtype=dtype)
+            # Reshape scales for broadcasting: [Num_Images, 1, 1, 1]
+            scales = scales.view(-1, 1, 1, 1)
+            
+            # Apply scales and then average along the Num_Images dimension
+            scaled_embeds = all_embeds * scales
+            cond_image_embeds = torch.mean(scaled_embeds, dim=0) # Shape: [1, Seq_Len, Embed_Dim]
+
+        # Create unconditional image embeds (zeros)
+        uncond_image_embeds = torch.zeros_like(cond_image_embeds)
         
+        # Stack for Classifier-Free Guidance. Shape: [2, Seq_Len, Embed_Dim]
+        clip_image_embeds = torch.cat([uncond_image_embeds, cond_image_embeds], dim=0)
+        
+        print(f"Final combined image embeds shape: {clip_image_embeds.shape}")
+        # <<< END OF MODIFIED SECTION >>>
+
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
@@ -1230,12 +1238,17 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
 
+                # This is now correct:
+                # clip_image_embeds has shape [2, Seq, Dim]
+                # timestep has shape [2]
+                # This returns image_prompt_embeds with shape [2, N_Queries, Proj_Dim]
                 image_prompt_embeds, timestep_emb = self.image_proj_model(
                     clip_image_embeds, 
                     timestep.to(dtype=latents.dtype), 
                     need_temb=True
                 )
 
+                # This is also correct. The processor will get the CFG-batched image embeds.
                 joint_attention_kwargs = dict(
                     emb_dict=dict(
                         ip_hidden_states=image_prompt_embeds,
@@ -1244,6 +1257,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                     )
                 )
 
+                # The transformer call is also correct, as latent_model_input and prompt_embeds are also CFG-batched.
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
